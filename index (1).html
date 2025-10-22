@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Bomberman 2 Jogadores</title>
+<style>
+  body {
+    background: #222;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    margin: 0;
+    user-select: none;
+    font-family: monospace;
+    color: #eee;
+  }
+  #game {
+    position: relative;
+    width: 780px; /* 60px * 13 colunas */
+    height: 660px; /* 60px * 11 linhas */
+    background: #333;
+    display: grid;
+    grid-template-columns: repeat(13, 60px);
+    grid-template-rows: repeat(11, 60px);
+    border: 3px solid #555;
+  }
+  .cell {
+    box-sizing: border-box;
+    border: 1px solid #555;
+    position: relative;
+  }
+  /* Blocos fixos */
+  .block-solid {
+    background: #666;
+  }
+  /* Blocos destruíveis */
+  .block-soft {
+    background: #b5651d;
+    cursor: pointer;
+  }
+  /* Power-ups */
+  .power-up {
+    position: absolute;
+    width: 30px;
+    height: 30px;
+    background: limegreen;
+    border-radius: 5px;
+    top: 15px;
+    left: 15px;
+    font-weight: bold;
+    font-size: 18px;
+    text-align: center;
+    line-height: 30px;
+    user-select: none;
+    pointer-events: none;
+  }
+  /* Bombas */
+  .bomb {
+    position: absolute;
+    background: black;
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    top: 10px;
+    left: 10px;
+    box-shadow: 0 0 8px 2px orange;
+  }
+  /* Explosão */
+  .explosion {
+    position: absolute;
+    background: orange;
+    border-radius: 50%;
+    width: 60px;
+    height: 60px;
+    top: 0;
+    left: 0;
+    opacity: 0.8;
+    animation: flash 0.3s ease forwards;
+    z-index: 5;
+  }
+  @keyframes flash {
+    0% {opacity: 0.8;}
+    100% {opacity: 0;}
+  }
+  /* Jogadores */
+  .player {
+    position: absolute;
+    width: 48px;
+    height: 48px;
+    top: 6px;
+    left: 6px;
+    border-radius: 10px;
+    z-index: 10;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-weight: bold;
+    font-size: 24px;
+    color: white;
+    user-select: none;
+  }
+  .player1 {
+    background: #3498db;
+    border: 3px solid #2980b9;
+  }
+  .player2 {
+    background: #e74c3c;
+    border: 3px solid #c0392b;
+  }
+  /* HUD */
+  #hud {
+    position: absolute;
+    bottom: -80px;
+    width: 100%;
+    text-align: center;
+    font-size: 18px;
+  }
+</style>
+</head>
+<body>
+<div style="position:relative;">
+  <div id="game"></div>
+  <div id="hud">
+    <div>Jogador 1 (azul) - Mov: WASD, Bomba: E | Alcance: <span id="p1-range">1</span> Bombas: <span id="p1-bombs">1</span> Velocidade: <span id="p1-speed">1</span></div>
+    <div>Jogador 2 (vermelho) - Mov: setas, Bomba: Enter | Alcance: <span id="p2-range">1</span> Bombas: <span id="p2-bombs">1</span> Velocidade: <span id="p2-speed">1</span></div>
+  </div>
+</div>
+
+<script>
+  // Configurações iniciais
+  const ROWS = 11;
+  const COLS = 13;
+  const CELL_SIZE = 60;
+
+  const game = document.getElementById('game');
+
+  // Tipo de células:
+  // 0 = vazio
+  // 1 = bloco sólido (não destrutível)
+  // 2 = bloco destruível (soft)
+  // 3 = power-up no chão (mas representa bloco destruível ainda, power-up aparece depois)
+  // Inicialmente criaremos um mapa básico
+
+  // Mapa base:
+  // - blocos sólidos nas bordas e a cada 2 células internas
+  // - blocos destruíveis preenchendo o resto (com exceções para spawn dos jogadores)
+  // - power-ups aparecem aleatoriamente quando destrói blocos
+
+  let map = [];
+
+  // Criar mapa
+  function initMap() {
+    map = [];
+    for(let r=0; r<ROWS; r++) {
+      let row = [];
+      for(let c=0; c<COLS; c++) {
+        // borda sólida
+        if (r === 0 || r === ROWS-1 || c === 0 || c === COLS-1) {
+          row.push(1);
+          continue;
+        }
+        // blocos sólidos em posições pares (exceto borda)
+        if (r%2 === 0 && c%2 === 0) {
+          row.push(1);
+          continue;
+        }
+        // espaços próximos dos spawn dos jogadores ficam vazios para movimentação inicial
+        // Jogador1 spawn: (1,1), (1,2), (2,1)
+        // Jogador2 spawn: (ROWS-2, COLS-2), (ROWS-2, COLS-3), (ROWS-3, COLS-2)
+        if (
+          (r === 1 && c <= 2) ||
+          (r === 2 && c === 1) ||
+          (r === ROWS - 2 && c >= COLS - 3) ||
+          (r === ROWS - 3 && c === COLS - 2)
+        ) {
+          row.push(0);
+          continue;
+        }
+        // o resto blocos destruíveis (2)
+        row.push(2);
+      }
+      map.push(row);
+    }
+  }
+
+  // Representação visual e lógica
+  // Cada célula é um div com classe 'cell' e outras classes dependendo do tipo
+
+  function drawMap() {
+    game.innerHTML = '';
+    for(let r=0; r<ROWS; r++) {
+      for(let c=0; c<COLS; c++) {
+        const cell = document.createElement('div');
+        cell.classList.add('cell');
+        cell.dataset.row = r;
+        cell.dataset.col = c;
+
+        if (map[r][c] === 1) cell.classList.add('block-solid');
+        else if (map[r][c] === 2) cell.classList.add('block-soft');
+        else if (map[r][c] === 3) {
+          // power-up escondido (não aparece visual, só após destruição)
+          cell.classList.add('block-soft');
+        }
+
+        game.appendChild(cell);
+      }
+    }
+  }
+
+  // Jogadores
+  const players = [
+    {
+      id: 1,
+      colorClass: 'player1',
+      pos: {r:1, c:1},
+      bombsMax: 1,
+      bombsPlaced: 0,
+      bombRange: 1,
+      speed: 1,
+      element: null,
+      alive: true,
+      keys: {up: 'w', left: 'a', down: 's', right: 'd', bomb: 'e'},
+      bombs: [],
+      lastMove: 0
+    },
+    {
+      id: 2,
+      colorClass: 'player2',
+      pos: {r: ROWS-2, c: COLS-2},
+      bombsMax: 1,
+      bombsPlaced: 0,
+      bombRange: 1,
+      speed: 1,
+      element: null,
+      alive: true,
+      keys: {up: 'ArrowUp', left: 'ArrowLeft', down: 'ArrowDown', right: 'ArrowRight', bomb: 'Enter'},
+      bombs: [],
+      lastMove: 0
+    }
+  ];
+
+  // Criar elementos visuais dos jogadores
+  function drawPlayers() {
+    players.forEach(player => {
+      if (!player.element) {
+        const el = document.createElement('div');
+        el.classList.add('player', player.colorClass);
+        el.textContent = player.id;
+        game.appendChild(el);
+        player.element = el;
+      }
+      updatePlayerPosition(player);
+    });
+  }
+
+  // Atualizar posição visual
+  function updatePlayerPosition(player) {
+    if (!player.alive) {
+      player.element.style.display = 'none';
+      return;
+    }
+    player.element.style.display = 'flex';
+    player.element.style.gridRowStart = player.pos.r + 1;
+    player.element.style.gridColumnStart = player.pos.c + 1;
+  }
+
+  // Movimento com verificação de colisão
+  function canMove(r,c) {
+    if (r < 0 || r >= ROWS || c < 0 || c >= COLS) return false;
+    if (map[r][c] === 1) return false; // bloco sólido
+    if (map[r][c] === 2 || map[r][c] === 3) return false; // blocos destruíveis bloqueiam movimento
+    // também bloqueia se tem bomba no local
+    for (const p of players) {
+      if (p.bombs.some(b => b.r === r && b.c === c)) return false;
+    }
+    return true;
+  }
+
+  // Gerenciar bombas e explosões
+  // Bombas explodem após 3 segundos
+  // Explosão dura 0.5 seg
+  // Explosão destrói blocos destruíveis e power-ups aparecem com chance
+
+  // Armazena bombas globais para controle de explosões
+  let bombsGlobal = [];
+
+  // Função colocar bomba
+  function placeBomb(player) {
+    if (!player.alive) return;
+    if (player.bombsPlaced >= player.bombsMax) return;
+
+    // Se já tem bomba na posição do jogador, não coloca
+    if (player.bombs.some(b => b.r === player.pos.r && b.c === player.pos.c)) return;
+
+    // Criar bomba
+    const bomb = {
+      r: player.pos.r,
+      c: player.pos.c,
+      owner: player,
+      timeout: null,
+      exploded: false
+    };
+    player.bombs.push(bomb);
+    player.bombsPlaced++;
+    bombsGlobal.push(bomb);
+    drawBomb(bomb);
+
+    // Definir timer de explosão
+    bomb.timeout = setTimeout(() => explodeBomb(bomb), 3000);
+  }
+
+  // Criar bomba visual
+  function drawBomb(bomb) {
+    const cellIndex = bomb.r * COLS + bomb.c;
+    const cell = game.children[cellIndex];
+    const bombEl = document.createElement('div');
+    bombEl.classList.add('bomb');
+    bomb.element = bombEl;
+    cell.appendChild(bombEl);
+  }
+
+  // Explosão
+  function explodeBomb(bomb) {
+    if (bomb.exploded) return;
+    bomb.exploded = true;
+    bomb.owner.bombsPlaced--;
+    bomb.owner.bombs = bomb.owner.bombs.filter(b => b !== bomb);
+
+    // Remove bomba visual
+    if (bomb.element && bomb.element.parentNode) {
+      bomb.element.parentNode.removeChild(bomb.element);
+    }
+
+    // Explosão afeta as células em cruz: alcance do dono da bomba
+    const r = bomb.r;
+    const c = bomb.c;
+    const range = bomb.owner.bombRange;
+
+    // Marca explosões
+    const explodedCells = [[r,c]];
+
+    // Checa direções para alcance da explosão
+    function checkDir(dr, dc) {
+      for(let i=1; i<=range; i++) {
+        const nr = r + dr*i;
+        const nc = c + dc*i;
+        if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) break;
+        if (map[nr][nc] === 1) break; // bloco sólido para explosão
+        explodedCells.push([nr,nc]);
+        if (map[nr][nc] === 2 || map[nr][nc] === 3) break; // destrói bloco e para explosão
+        // bombas detonam em cadeia
+        for(const otherBomb of bombsGlobal) {
+          if (otherBomb.r === nr && otherBomb.c === nc && !otherBomb.exploded) {
+            clearTimeout(otherBomb.timeout);
+            explodeBomb(otherBomb);
+          }
+        }
+      }
+    }
+    checkDir(-1,0); // cima
+    checkDir(1,0);  // baixo
+    checkDir(0,-1); // esquerda
+    checkDir(0,1);  // direita
+
+    // Criar explosão visual nas células
+    explodedCells.forEach(([er,ec]) => createExplosion(er, ec));
+
+    // Afeta jogadores que estiverem na explosão
+    players.forEach(player => {
+      if (!player.alive) return;
+      if (explodedCells.some(([er,ec]) => er === player.pos.r && ec === player.pos.c)) {
+        playerDie(player);
+      }
+    });
+
+    // Afeta blocos destruíveis e gera power-ups com chance
+    explodedCells.forEach(([er,ec]) => {
+      if (map[er][ec] === 2 || map[er][ec] === 3) {
+        // Destrói bloco
+        map[er][ec] = 0;
+        updateCell(er,ec);
+
+        // Chance de power-up só se era bloco destruível com power-up (3)
+        if (Math.random() < 0.3) {
+          spawnPowerUp(er,ec);
+        }
+      }
+    });
+  }
+
+  // Criar efeito de explosão visual
+  function createExplosion(r,c) {
+    const cellIndex = r * COLS + c;
+    const cell = game.children[cellIndex];
+    const exp = document.createElement('div');
+    exp.classList.add('explosion');
+    cell.appendChild(exp);
+    setTimeout(() => {
+      if (exp.parentNode) exp.parentNode.removeChild(exp);
+    }, 500);
+  }
+
+  // Atualizar célula visual após destruição do bloco
+  function updateCell(r,c) {
+    const cellIndex = r * COLS + c;
+    const cell = game.children[cellIndex];
+    cell.className = 'cell';
+    // vazio
+  }
+
+  // Spawn power-up
+  // Power-ups: alcance da bomba (R), bombas max (B), velocidade (S)
+  function spawnPowerUp(r,c) {
+    // Escolhe aleatoriamente
+    const types = ['R','B','S'];
+    const type = types[Math.floor(Math.random()*types.length)];
+    const cellIndex = r * COLS + c;
+    const cell = game.children[cellIndex];
+    const pu = document.createElement('div');
+    pu.classList.add('power-up');
+    pu.textContent = type;
+    pu.dataset.type = type;
+    cell.appendChild(pu);
+    cell.dataset.powerUp = type;
+  }
+
+  // Jogadores coletam power-ups
+  function checkPowerUp(player) {
+    const r = player.pos.r;
+    const c = player.pos.c;
+    const cellIndex = r * COLS + c;
+    const cell = game.children[cellIndex];
+    if (cell.dataset.powerUp) {
+      const type = cell.dataset.powerUp;
+      switch(type) {
+        case 'R':
+          player.bombRange++;
+          break;
+        case 'B':
+          player.bombsMax++;
+          break;
+        case 'S':
+          player.speed = Math.min(player.speed + 0.5, 3);
+          break;
+      }
+      // Remove power-up visual e dados
+      const pu = cell.querySelector('.power-up');
+      if (pu) pu.remove();
+      delete cell.dataset.powerUp;
+
+      updateHUD();
+    }
+  }
+
+  // Jogador morre
+  function playerDie(player) {
+    if (!player.alive) return;
+    player.alive = false;
+    player.element.style.background = '#555';
+    player.element.textContent = 'X';
+    alert(`Jogador ${player.id} foi eliminado!`);
+    checkGameOver();
+  }
+
+  // Checar fim do jogo
+  function checkGameOver() {
+    const alivePlayers = players.filter(p => p.alive);
+    if (alivePlayers.length <= 1) {
+      if (alivePlayers.length === 1) {
+        alert(`Jogador ${alivePlayers[0].id} venceu!`);
+      } else {
+        alert('Empate!');
+      }
+      resetGame();
+    }
+  }
+
+  // Resetar jogo
+  function resetGame() {
+    initMap();
+    drawMap();
+    players.forEach(player => {
+      player.pos = player.id === 1 ? {r:1,c:1} : {r:ROWS-2,c:COLS-2};
+      player.bombsMax = 1;
+      player.bombsPlaced = 0;
+      player.bombRange = 1;
+      player.speed = 1;
+      player.alive = true;
+      player.bombs = [];
+      updatePlayerPosition(player);
+      player.element.style.background = player.id === 1 ? '#3498db' : '#e74c3c';
+      player.element.textContent = player.id;
+    });
+    bombsGlobal = [];
+    updateHUD();
+  }
+
+  // Atualizar HUD
+  function updateHUD() {
+    document.getElementById('p1-range').textContent = players[0].bombRange;
+    document.getElementById('p1-bombs').textContent = players[0].bombsMax;
+    document.getElementById('p1-speed').textContent = players[0].speed.toFixed(1);
+
+    document.getElementById('p2-range').textContent = players[1].bombRange;
+    document.getElementById('p2-bombs').textContent = players[1].bombsMax;
+    document.getElementById('p2-speed').textContent = players[1].speed.toFixed(1);
+  }
+
+  // Movimentação por teclado
+  const keysPressed = {};
+
+  document.addEventListener('keydown', e => {
+    keysPressed[e.key] = true;
+    e.preventDefault();
+  });
+
+  document.addEventListener('keyup', e => {
+    keysPressed[e.key] = false;
+    e.preventDefault();
+  });
+
+  // Função de movimentação atualizada com velocidade
+  function tryMove(player, dr, dc) {
+    if (!player.alive) return;
+    const now = Date.now();
+    if (now - player.lastMove < 300 / player.speed) return; // delay baseado na velocidade
+    const nr = player.pos.r + dr;
+    const nc = player.pos.c + dc;
+    if (canMove(nr,nc)) {
+      player.pos.r = nr;
+      player.pos.c = nc;
+      updatePlayerPosition(player);
+      checkPowerUp(player);
+      player.lastMove = now;
+    }
+  }
+
+  // Loop de controle simples
+  function gameLoop() {
+    // Jogador 1 movimento
+    if (keysPressed[players[0].keys.up]) tryMove(players[0], -1, 0);
+    if (keysPressed[players[0].keys.down]) tryMove(players[0], 1, 0);
+    if (keysPressed[players[0].keys.left]) tryMove(players[0], 0, -1);
+    if (keysPressed[players[0].keys.right]) tryMove(players[0], 0, 1);
+    if (keysPressed[players[0].keys.bomb]) {
+      placeBomb(players[0]);
+      keysPressed[players[0].keys.bomb] = false; // impede bomba spam contínuo
+    }
+
+    // Jogador 2 movimento
+    if (keysPressed[players[1].keys.up]) tryMove(players[1], -1, 0);
+    if (keysPressed[players[1].keys.down]) tryMove(players[1], 1, 0);
+    if (keysPressed[players[1].keys.left]) tryMove(players[1], 0, -1);
+    if (keysPressed[players[1].keys.right]) tryMove(players[1], 0, 1);
+    if (keysPressed[players[1].keys.bomb]) {
+      placeBomb(players[1]);
+      keysPressed[players[1].keys.bomb] = false;
+    }
+
+    requestAnimationFrame(gameLoop);
+  }
+
+  // Inicializa tudo
+  function init() {
+    initMap();
+    drawMap();
+    drawPlayers();
+    updateHUD();
+    gameLoop();
+  }
+
+  init();
+
+</script>
+</body>
+</html>
